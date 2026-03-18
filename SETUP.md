@@ -1,19 +1,69 @@
 # Local Setup Guide
 
-This guide shows how to run the Tracer agent locally with your Tracer account.
+This guide covers two local paths:
+
+- A bundled local RCA demo with the least setup friction
+- The full local development flow with your Tracer account
 
 ## Prerequisites
 
 - Python 3.11+
 - `make`
 
-## 1. Install dependencies
+## 1. Fastest path: bundled local Grafana RCA demo
+
+If you want to see a minimal Grafana-style RCA report locally as quickly as possible, start here.
+
+1. Install dependencies:
+
+   ```bash
+   make install
+   ```
+
+2. Copy the example env file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Add one LLM key to `.env`:
+
+   ```bash
+   ANTHROPIC_API_KEY=your-anthropic-api-key
+   ```
+
+   Or, if you prefer OpenAI:
+
+   ```bash
+   LLM_PROVIDER=openai
+   OPENAI_API_KEY=your-openai-api-key
+   ```
+
+4. Run the bundled Grafana RCA example:
+
+   ```bash
+   make local-grafana-demo
+   ```
+
+This path uses bundled Grafana-style alert and evidence data. It does not require a Tracer account or real Grafana, Slack, Datadog, or AWS credentials.
+
+If you want the generic bundled RCA example instead, run:
+
+```bash
+make local-rca-demo
+```
+
+## 2. Full local development setup
+
+Use this path when you want to run the agent locally with your Tracer account and your own integrations.
+
+### Install dependencies
 
 ```bash
 make install
 ```
 
-## 2. Configure Env variables
+### Configure env variables
 
 1. Copy the example env file:
 
@@ -31,7 +81,7 @@ make install
 
 You can use `.env.example` as a reference for any other optional integrations you want to enable.
 
-## 3. Run the LangGraph dev UI
+### Run the LangGraph dev UI
 
 Start the LangGraph dev server:
 

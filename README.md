@@ -25,10 +25,17 @@
 ```bash
 git clone https://github.com/Tracer-Cloud/open-sre-agent
 cd open-sre-agent
-make dev
+make install
+cp .env.example .env
+# set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env
+make local-grafana-demo
 ```
 
-Documentation → `/docs`
+Want the fastest Grafana-first path to a first RCA report? Start with [docs/local-grafana-demo.md](docs/local-grafana-demo.md).
+
+Want the generic bundled RCA example instead? See [docs/local-rca-demo.md](docs/local-rca-demo.md).
+
+Want to run the LangGraph dev UI or connect your own systems? See [SETUP.md](SETUP.md).
 
 ---
 

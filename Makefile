@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: install test test-full demo clean lint format deploy deploy-lambda deploy-prefect deploy-flink destroy destroy-lambda destroy-prefect destroy-flink prefect-local-test simulate-k8s-alert test-k8s-local test-k8s test-k8s-datadog deploy-dd-monitors cleanup-dd-monitors deploy-eks destroy-eks test-k8s-eks datadog-demo crashloop-demo regen-trigger-config test-rca
+.PHONY: install test test-full demo local-rca-demo local-grafana-demo clean lint format deploy deploy-lambda deploy-prefect deploy-flink destroy destroy-lambda destroy-prefect destroy-flink prefect-local-test simulate-k8s-alert test-k8s-local test-k8s test-k8s-datadog deploy-dd-monitors cleanup-dd-monitors deploy-eks destroy-eks test-k8s-eks datadog-demo crashloop-demo regen-trigger-config test-rca
 
 PYTHON = python3
 PIP = python3 -m pip
@@ -18,6 +18,14 @@ install:
 # Run Prefect ECS demo (default demo) - shows Investigation Trace in RCA
 demo:
 	$(PYTHON) -m tests.test_case_upstream_prefect_ecs_fargate.test_agent_e2e
+
+# Run bundled local RCA example with sample alert and evidence
+local-rca-demo:
+	$(PYTHON) -m app.demo.local_rca
+
+# Run bundled local Grafana RCA example with sample alert and evidence
+local-grafana-demo:
+	$(PYTHON) -m app.demo.local_grafana_rca
 
 # Run CloudWatch demo
 cloudwatch-demo:
@@ -221,6 +229,8 @@ help:
 	@echo ""
 	@echo "  DEMOS"
 	@echo "  make demo            - Run Prefect ECS E2E test (default, shows Investigation Trace)"
+	@echo "  make local-grafana-demo - Run the bundled local Grafana RCA example"
+	@echo "  make local-rca-demo  - Run the bundled local RCA example (no Tracer account required)"
 	@echo "  make prefect-demo    - Run Prefect ECS Fargate E2E test (alias for demo)"
 	@echo "  make prefect-local-test - Run Prefect ECS local test (CLOUD=1 for ECS)"
 	@echo "  make flink-demo      - Run Apache Flink ECS E2E test"
@@ -254,4 +264,3 @@ help:
 	@echo "  make format          - Format code with ruff"
 	@echo "  make typecheck       - Type check with mypy"
 	@echo "  make check           - Run all checks"
-
