@@ -700,6 +700,13 @@ Thanks goes to these amazing people:
             <sub><b>MestreY0d4-Uninter</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/qorexdevs">
+            <img src="https://avatars.githubusercontent.com/u/277760369?v=4" width="100" alt="qorexdevs"/>
+            <br />
+            <sub><b>qorexdevs</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
