@@ -1097,6 +1097,13 @@ Thanks goes to these amazing people:
             <sub><b>zeesshhh0</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/PrakharJain345">
+            <img src="https://avatars.githubusercontent.com/u/171273173?v=4" width="100" alt="PrakharJain345"/>
+            <br />
+            <sub><b>PrakharJain345</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
