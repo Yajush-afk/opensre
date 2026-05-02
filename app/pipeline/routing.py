@@ -14,8 +14,20 @@ logger = logging.getLogger(__name__)
 
 
 def route_by_mode(state: AgentState) -> str:
-    """Route based on agent mode. Defaults to chat when mode is not set."""
-    return "investigation" if state.get("mode") == "investigation" else "chat"
+    """Route based on agent mode. Defaults to chat when mode is missing or invalid."""
+    mode = state.get("mode")
+    if mode is None:
+        logger.warning(
+            "route_by_mode: mode is missing or None; defaulting to 'chat'. "
+            "Set state['mode'] = 'investigation' to trigger the investigation pipeline."
+        )
+    elif mode not in ("investigation", "chat"):
+        logger.warning(
+            "route_by_mode: unrecognized mode %r; defaulting to 'chat'. "
+            "Valid values are 'investigation' and 'chat'.",
+            mode,
+        )
+    return "investigation" if mode == "investigation" else "chat"
 
 
 def route_chat(state: AgentState) -> str:
