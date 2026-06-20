@@ -13,6 +13,11 @@ from typing import Literal
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from app.llm_credentials import resolve_llm_api_key
+from app.llm_endpoint import (
+    CUSTOM_LLM_PROVIDER_SPECS,
+    get_custom_llm_provider_spec,
+    normalize_custom_llm_base_url,
+)
 from app.strict_config import StrictConfigModel
 from app.utils.config import load_env
 
@@ -150,6 +155,8 @@ DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 LLMProvider = Literal[
     "anthropic",
     "openai",
+    "custom-openai",
+    "custom-anthropic",
     "openrouter",
     "deepseek",
     "gemini",
@@ -187,6 +194,8 @@ KEYLESS_LLM_PROVIDERS = frozenset(
 LLM_PROVIDER_API_KEY_ENVS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "custom-openai": "CUSTOM_OPENAI_API_KEY",
+    "custom-anthropic": "CUSTOM_ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -195,6 +204,11 @@ LLM_PROVIDER_API_KEY_ENVS = {
     "groq": "GROQ_API_KEY",
 }
 DEFAULT_LLM_RESOLUTION_FALLBACK_PROVIDERS: tuple[str, ...] = ("openai", "anthropic")
+
+
+def _custom_model_from_env(*, tier_env: str, shared_env: str, default: str) -> str:
+    """Resolve a custom-provider tier model through shared and family defaults."""
+    return os.getenv(tier_env, "").strip() or os.getenv(shared_env, "").strip() or default
 
 
 def get_configured_llm_provider() -> str:
@@ -223,6 +237,10 @@ def _llm_settings_env_payload(provider: str) -> dict[str, object]:
         "provider": provider,
         "anthropic_api_key": resolve_llm_api_key("ANTHROPIC_API_KEY"),
         "openai_api_key": resolve_llm_api_key("OPENAI_API_KEY"),
+        "custom_openai_api_key": resolve_llm_api_key("CUSTOM_OPENAI_API_KEY"),
+        "custom_anthropic_api_key": resolve_llm_api_key("CUSTOM_ANTHROPIC_API_KEY"),
+        "custom_openai_base_url": os.getenv("CUSTOM_OPENAI_BASE_URL", ""),
+        "custom_anthropic_base_url": os.getenv("CUSTOM_ANTHROPIC_BASE_URL", ""),
         "openrouter_api_key": resolve_llm_api_key("OPENROUTER_API_KEY"),
         "deepseek_api_key": resolve_llm_api_key("DEEPSEEK_API_KEY"),
         "gemini_api_key": resolve_llm_api_key("GEMINI_API_KEY"),
@@ -251,6 +269,36 @@ def _llm_settings_env_payload(provider: str) -> dict[str, object]:
         or OPENAI_CLASSIFICATION_MODEL,
         "openai_toolcall_model": os.getenv("OPENAI_TOOLCALL_MODEL", OPENAI_TOOLCALL_MODEL).strip()
         or OPENAI_TOOLCALL_MODEL,
+        "custom_openai_reasoning_model": _custom_model_from_env(
+            tier_env="CUSTOM_OPENAI_REASONING_MODEL",
+            shared_env="CUSTOM_OPENAI_MODEL",
+            default=OPENAI_REASONING_MODEL,
+        ),
+        "custom_openai_classification_model": _custom_model_from_env(
+            tier_env="CUSTOM_OPENAI_CLASSIFICATION_MODEL",
+            shared_env="CUSTOM_OPENAI_MODEL",
+            default=OPENAI_CLASSIFICATION_MODEL,
+        ),
+        "custom_openai_toolcall_model": _custom_model_from_env(
+            tier_env="CUSTOM_OPENAI_TOOLCALL_MODEL",
+            shared_env="CUSTOM_OPENAI_MODEL",
+            default=OPENAI_TOOLCALL_MODEL,
+        ),
+        "custom_anthropic_reasoning_model": _custom_model_from_env(
+            tier_env="CUSTOM_ANTHROPIC_REASONING_MODEL",
+            shared_env="CUSTOM_ANTHROPIC_MODEL",
+            default=ANTHROPIC_REASONING_MODEL,
+        ),
+        "custom_anthropic_classification_model": _custom_model_from_env(
+            tier_env="CUSTOM_ANTHROPIC_CLASSIFICATION_MODEL",
+            shared_env="CUSTOM_ANTHROPIC_MODEL",
+            default=ANTHROPIC_CLASSIFICATION_MODEL,
+        ),
+        "custom_anthropic_toolcall_model": _custom_model_from_env(
+            tier_env="CUSTOM_ANTHROPIC_TOOLCALL_MODEL",
+            shared_env="CUSTOM_ANTHROPIC_MODEL",
+            default=ANTHROPIC_TOOLCALL_MODEL,
+        ),
         "openrouter_reasoning_model": os.getenv(
             "OPENROUTER_REASONING_MODEL",
             os.getenv("OPENROUTER_MODEL", OPENROUTER_REASONING_MODEL),
@@ -379,6 +427,10 @@ class LLMSettings(StrictConfigModel):
     provider: LLMProvider = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    custom_openai_api_key: str = ""
+    custom_anthropic_api_key: str = ""
+    custom_openai_base_url: str = ""
+    custom_anthropic_base_url: str = ""
     openrouter_api_key: str = ""
     deepseek_api_key: str = ""
     gemini_api_key: str = ""
@@ -393,6 +445,12 @@ class LLMSettings(StrictConfigModel):
     openai_reasoning_model: str = OPENAI_REASONING_MODEL
     openai_classification_model: str = OPENAI_CLASSIFICATION_MODEL
     openai_toolcall_model: str = OPENAI_TOOLCALL_MODEL
+    custom_openai_reasoning_model: str = OPENAI_REASONING_MODEL
+    custom_openai_classification_model: str = OPENAI_CLASSIFICATION_MODEL
+    custom_openai_toolcall_model: str = OPENAI_TOOLCALL_MODEL
+    custom_anthropic_reasoning_model: str = ANTHROPIC_REASONING_MODEL
+    custom_anthropic_classification_model: str = ANTHROPIC_CLASSIFICATION_MODEL
+    custom_anthropic_toolcall_model: str = ANTHROPIC_TOOLCALL_MODEL
     openrouter_reasoning_model: str = OPENROUTER_REASONING_MODEL
     openrouter_classification_model: str = OPENROUTER_CLASSIFICATION_MODEL
     openrouter_toolcall_model: str = OPENROUTER_TOOLCALL_MODEL
@@ -431,6 +489,8 @@ class LLMSettings(StrictConfigModel):
         valid_providers = (
             "anthropic",
             "openai",
+            "custom-openai",
+            "custom-anthropic",
             "openrouter",
             "deepseek",
             "gemini",
@@ -467,6 +527,8 @@ class LLMSettings(StrictConfigModel):
         provider_to_key = {
             "anthropic": self.anthropic_api_key,
             "openai": self.openai_api_key,
+            "custom-openai": self.custom_openai_api_key,
+            "custom-anthropic": self.custom_anthropic_api_key,
             "openrouter": self.openrouter_api_key,
             "deepseek": self.deepseek_api_key,
             "gemini": self.gemini_api_key,
@@ -479,6 +541,25 @@ class LLMSettings(StrictConfigModel):
 
         env_var = get_llm_provider_api_key_env(self.provider)
         raise ValueError(f"LLM provider '{self.provider}' requires {env_var} to be set.")
+
+    @model_validator(mode="after")
+    def _require_custom_provider_endpoint(self) -> "LLMSettings":
+        spec = get_custom_llm_provider_spec(self.provider)
+        if spec is None:
+            return self
+
+        field_name = self.provider.replace("-", "_") + "_base_url"
+        raw_base_url = str(getattr(self, field_name))
+        if not raw_base_url:
+            raise ValueError(
+                f"LLM provider '{self.provider}' requires {spec.base_url_env} to be set."
+            )
+        setattr(
+            self,
+            field_name,
+            normalize_custom_llm_base_url(raw_base_url, spec.api_surface),
+        )
+        return self
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
@@ -514,8 +595,11 @@ def resolve_llm_settings(
     load_env(override=False)
     configured_provider = get_configured_llm_provider()
     configured_missing_key_error: ValidationError | None = None
+    effective_fallbacks = (
+        () if configured_provider in CUSTOM_LLM_PROVIDER_SPECS else fallback_providers
+    )
 
-    for provider in _candidate_llm_providers(configured_provider, fallback_providers):
+    for provider in _candidate_llm_providers(configured_provider, effective_fallbacks):
         try:
             return LLMSettings.model_validate(_llm_settings_env_payload(provider))
         except ValidationError as exc:
@@ -558,6 +642,20 @@ OPENAI_LLM_CONFIG = LLMModelConfig(
     reasoning_model=OPENAI_REASONING_MODEL,
     classification_model=OPENAI_CLASSIFICATION_MODEL,
     toolcall_model=OPENAI_TOOLCALL_MODEL,
+    max_tokens=DEFAULT_MAX_TOKENS,
+)
+
+CUSTOM_OPENAI_LLM_CONFIG = LLMModelConfig(
+    reasoning_model=OPENAI_REASONING_MODEL,
+    classification_model=OPENAI_CLASSIFICATION_MODEL,
+    toolcall_model=OPENAI_TOOLCALL_MODEL,
+    max_tokens=DEFAULT_MAX_TOKENS,
+)
+
+CUSTOM_ANTHROPIC_LLM_CONFIG = LLMModelConfig(
+    reasoning_model=ANTHROPIC_REASONING_MODEL,
+    classification_model=ANTHROPIC_CLASSIFICATION_MODEL,
+    toolcall_model=ANTHROPIC_TOOLCALL_MODEL,
     max_tokens=DEFAULT_MAX_TOKENS,
 )
 

@@ -3,7 +3,17 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.config import LLMSettings, has_credentials_for_active_llm_provider, resolve_llm_settings
+from app.config import (
+    ANTHROPIC_CLASSIFICATION_MODEL,
+    ANTHROPIC_REASONING_MODEL,
+    ANTHROPIC_TOOLCALL_MODEL,
+    OPENAI_CLASSIFICATION_MODEL,
+    OPENAI_REASONING_MODEL,
+    OPENAI_TOOLCALL_MODEL,
+    LLMSettings,
+    has_credentials_for_active_llm_provider,
+    resolve_llm_settings,
+)
 
 
 def test_llm_settings_reject_provider_typos_with_suggestion() -> None:
@@ -19,6 +29,188 @@ def test_llm_settings_reject_provider_typos_with_suggestion() -> None:
 def test_llm_settings_require_api_key_for_selected_provider() -> None:
     with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
         LLMSettings.model_validate({"provider": "openai"})
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_field", "base_url_field", "base_url"),
+    [
+        (
+            "custom-openai",
+            "custom_openai_api_key",
+            "custom_openai_base_url",
+            "http://localhost:4000/v1/",
+        ),
+        (
+            "custom-anthropic",
+            "custom_anthropic_api_key",
+            "custom_anthropic_base_url",
+            "http://localhost:4000/v1/",
+        ),
+    ],
+)
+def test_llm_settings_accept_custom_providers(
+    provider: str,
+    key_field: str,
+    base_url_field: str,
+    base_url: str,
+) -> None:
+    settings = LLMSettings.model_validate(
+        {
+            "provider": provider,
+            key_field: "gateway-key",
+            base_url_field: base_url,
+        }
+    )
+
+    assert settings.provider == provider
+    assert getattr(settings, key_field) == "gateway-key"
+    expected_url = (
+        "http://localhost:4000/v1" if provider == "custom-openai" else "http://localhost:4000"
+    )
+    assert getattr(settings, base_url_field) == expected_url
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url_field", "base_url", "expected_key_env"),
+    [
+        (
+            "custom-openai",
+            "custom_openai_base_url",
+            "http://localhost:4000/v1",
+            "CUSTOM_OPENAI_API_KEY",
+        ),
+        (
+            "custom-anthropic",
+            "custom_anthropic_base_url",
+            "http://localhost:4000",
+            "CUSTOM_ANTHROPIC_API_KEY",
+        ),
+    ],
+)
+def test_llm_settings_require_custom_provider_api_key(
+    provider: str,
+    base_url_field: str,
+    base_url: str,
+    expected_key_env: str,
+) -> None:
+    with pytest.raises(ValidationError, match=expected_key_env):
+        LLMSettings.model_validate(
+            {
+                "provider": provider,
+                base_url_field: base_url,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_field", "expected_base_url_env"),
+    [
+        ("custom-openai", "custom_openai_api_key", "CUSTOM_OPENAI_BASE_URL"),
+        (
+            "custom-anthropic",
+            "custom_anthropic_api_key",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+        ),
+    ],
+)
+def test_llm_settings_require_custom_provider_base_url(
+    provider: str,
+    key_field: str,
+    expected_base_url_env: str,
+) -> None:
+    with pytest.raises(ValidationError, match=expected_base_url_env):
+        LLMSettings.model_validate(
+            {
+                "provider": provider,
+                key_field: "gateway-key",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "provider",
+        "key_env",
+        "base_url_env",
+        "expected_reasoning",
+        "expected_classification",
+        "expected_toolcall",
+    ),
+    [
+        (
+            "custom-openai",
+            "CUSTOM_OPENAI_API_KEY",
+            "CUSTOM_OPENAI_BASE_URL",
+            OPENAI_REASONING_MODEL,
+            OPENAI_CLASSIFICATION_MODEL,
+            OPENAI_TOOLCALL_MODEL,
+        ),
+        (
+            "custom-anthropic",
+            "CUSTOM_ANTHROPIC_API_KEY",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+            ANTHROPIC_REASONING_MODEL,
+            ANTHROPIC_CLASSIFICATION_MODEL,
+            ANTHROPIC_TOOLCALL_MODEL,
+        ),
+    ],
+)
+def test_llm_settings_custom_provider_uses_family_model_defaults(
+    monkeypatch,
+    provider: str,
+    key_env: str,
+    base_url_env: str,
+    expected_reasoning: str,
+    expected_classification: str,
+    expected_toolcall: str,
+) -> None:
+    prefix = key_env.removesuffix("_API_KEY")
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv(key_env, "gateway-key")
+    monkeypatch.setenv(base_url_env, "http://localhost:4000/v1")
+    for suffix in ("MODEL", "REASONING_MODEL", "CLASSIFICATION_MODEL", "TOOLCALL_MODEL"):
+        monkeypatch.setenv(f"{prefix}_{suffix}", "")
+
+    settings = LLMSettings.from_env()
+
+    field_prefix = provider.replace("-", "_")
+    assert getattr(settings, f"{field_prefix}_reasoning_model") == expected_reasoning
+    assert getattr(settings, f"{field_prefix}_classification_model") == expected_classification
+    assert getattr(settings, f"{field_prefix}_toolcall_model") == expected_toolcall
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_env", "base_url_env"),
+    [
+        ("custom-openai", "CUSTOM_OPENAI_API_KEY", "CUSTOM_OPENAI_BASE_URL"),
+        (
+            "custom-anthropic",
+            "CUSTOM_ANTHROPIC_API_KEY",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+        ),
+    ],
+)
+def test_llm_settings_custom_provider_model_precedence(
+    monkeypatch,
+    provider: str,
+    key_env: str,
+    base_url_env: str,
+) -> None:
+    prefix = key_env.removesuffix("_API_KEY")
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv(key_env, "gateway-key")
+    monkeypatch.setenv(base_url_env, "http://localhost:4000/v1")
+    monkeypatch.setenv(f"{prefix}_MODEL", "shared-model")
+    monkeypatch.setenv(f"{prefix}_REASONING_MODEL", "reasoning-model")
+    monkeypatch.setenv(f"{prefix}_TOOLCALL_MODEL", "toolcall-model")
+    monkeypatch.setenv(f"{prefix}_CLASSIFICATION_MODEL", "")
+
+    settings = LLMSettings.from_env()
+
+    field_prefix = provider.replace("-", "_")
+    assert getattr(settings, f"{field_prefix}_reasoning_model") == "reasoning-model"
+    assert getattr(settings, f"{field_prefix}_classification_model") == "shared-model"
+    assert getattr(settings, f"{field_prefix}_toolcall_model") == "toolcall-model"
 
 
 def test_llm_settings_from_env_uses_secure_local_api_key(monkeypatch) -> None:
@@ -206,6 +398,44 @@ def test_resolve_llm_settings_falls_back_to_openai_when_default_anthropic_key_mi
     assert settings.provider == "openai"
     assert settings.openai_api_key == "sk-openai"
     assert has_credentials_for_active_llm_provider() is True
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url_env", "expected_key_env"),
+    [
+        ("custom-openai", "CUSTOM_OPENAI_BASE_URL", "CUSTOM_OPENAI_API_KEY"),
+        (
+            "custom-anthropic",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+            "CUSTOM_ANTHROPIC_API_KEY",
+        ),
+    ],
+)
+def test_resolve_llm_settings_custom_provider_never_falls_back_to_public_provider(
+    monkeypatch,
+    provider: str,
+    base_url_env: str,
+    expected_key_env: str,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv(base_url_env, "http://localhost:4000/v1")
+    monkeypatch.setattr(
+        "app.config.resolve_llm_api_key",
+        lambda env_var: "public-key" if env_var in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"} else "",
+    )
+
+    with pytest.raises(ValidationError, match=expected_key_env):
+        resolve_llm_settings()
+
+
+def test_inactive_custom_endpoint_does_not_break_standard_provider(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("CUSTOM_OPENAI_BASE_URL", "not-a-url")
+
+    settings = LLMSettings.from_env()
+
+    assert settings.provider == "openai"
 
 
 def test_has_credentials_for_active_llm_provider_with_key(monkeypatch) -> None:
