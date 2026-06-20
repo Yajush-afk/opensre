@@ -16,6 +16,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.llm_endpoint import (
+    LLMAPISurface,
+    log_custom_llm_request,
+    log_custom_llm_response,
+)
 from app.utils.llm_retry import (
     LLMCreditExhaustedError,
     extract_retry_after_seconds,
@@ -137,8 +142,20 @@ class AnthropicAgentClient:
 
     provider_name = "Anthropic"
     auth_error_hint = "Check ANTHROPIC_API_KEY."
+    _provider_id = "anthropic"
+    _base_url: str | None = None
+    _model_type = "reasoning"
 
-    def __init__(self, model: str, max_tokens: int = 4096, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        max_tokens: int = 4096,
+        *,
+        client: Any | None = None,
+        provider_name: str = "anthropic",
+        base_url: str | None = None,
+        model_type: str = "reasoning",
+    ) -> None:
         if client is None:
             from anthropic import Anthropic
 
@@ -148,8 +165,14 @@ class AnthropicAgentClient:
             self._client = Anthropic(api_key=api_key, timeout=_CLIENT_TIMEOUT_SEC)
         else:
             self._client = client
+        self._provider_id = provider_name
+        if provider_name == "custom-anthropic":
+            self.provider_name = "Custom Anthropic"
+            self.auth_error_hint = "Check CUSTOM_ANTHROPIC_API_KEY."
+        self._base_url = base_url
         self._model = model
         self._max_tokens = max_tokens
+        self._model_type = model_type
 
     def tool_schemas(self, tools: list[Any]) -> list[dict[str, Any]]:
         return [_anthropic_tool_schema(t) for t in tools]
@@ -183,6 +206,15 @@ class AnthropicAgentClient:
         backoff = _RETRY_INITIAL_BACKOFF_SEC
         last_err: Exception | None = None
         for attempt in range(_RETRY_MAX_ATTEMPTS):
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_id,
+                api_surface=LLMAPISurface.ANTHROPIC_MESSAGES,
+                base_url=self._base_url,
+                tier=self._model_type,
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 response = self._client.messages.create(**kwargs)
                 break
@@ -256,6 +288,13 @@ class AnthropicAgentClient:
         else:
             raise RuntimeError(f"{self.provider_name} invocation failed") from last_err
 
+        log_custom_llm_response(
+            logger,
+            provider=self._provider_id,
+            base_url=self._base_url,
+            requested_model=self._model,
+            response=response,
+        )
         content_blocks = getattr(response, "content", None)
         if not isinstance(content_blocks, list):
             logger.warning(
@@ -485,6 +524,11 @@ def _openai_max_token_kwarg(model: str) -> str:
 class OpenAIAgentClient:
     """OpenAI-compatible client with tool-calling for the agent loop."""
 
+    provider_name = "OpenAI"
+    _provider_id = "openai"
+    _base_url: str | None = None
+    _model_type = "reasoning"
+
     def __init__(
         self,
         model: str,
@@ -492,6 +536,8 @@ class OpenAIAgentClient:
         base_url: str | None = None,
         api_key_env: str = "OPENAI_API_KEY",
         api_key_default: str = "",
+        provider_name: str = "openai",
+        model_type: str = "reasoning",
     ) -> None:
         from openai import OpenAI
 
@@ -499,8 +545,12 @@ class OpenAIAgentClient:
 
         api_key = resolve_llm_api_key(api_key_env) or api_key_default
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=_CLIENT_TIMEOUT_SEC)
+        self._provider_id = provider_name
+        self.provider_name = "Custom OpenAI" if provider_name == "custom-openai" else "OpenAI"
+        self._base_url = base_url
         self._model = model
         self._max_tokens = max_tokens
+        self._model_type = model_type
 
     def tool_schemas(self, tools: list[Any]) -> list[dict[str, Any]]:
         return [_openai_tool_schema(t) for t in tools]
@@ -536,23 +586,34 @@ class OpenAIAgentClient:
         backoff = _RETRY_INITIAL_BACKOFF_SEC
         last_err: Exception | None = None
         for attempt in range(_RETRY_MAX_ATTEMPTS):
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_id,
+                api_surface=LLMAPISurface.OPENAI_CHAT_COMPLETIONS,
+                base_url=self._base_url,
+                tier=self._model_type,
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 response = self._client.chat.completions.create(**kwargs)
                 break
             except AuthenticationError as err:
-                raise RuntimeError("OpenAI authentication failed.") from err
+                raise RuntimeError(f"{self.provider_name} authentication failed.") from err
             except NotFoundError as err:
-                raise RuntimeError(f"OpenAI model '{self._model}' not found.") from err
+                raise RuntimeError(
+                    f"{self.provider_name} model '{self._model}' not found."
+                ) from err
             except BadRequestError as err:
                 # Some providers (or proxies) surface insufficient_quota as
                 # 400 — distinguish before the generic wrap.
-                _maybe_raise_credit_exhausted("OpenAI", err)
-                raise RuntimeError(f"OpenAI request rejected: {err}") from err
+                _maybe_raise_credit_exhausted(self.provider_name, err)
+                raise RuntimeError(f"{self.provider_name} request rejected: {err}") from err
             except RateLimitError as err:
                 # OpenAI returns insufficient_quota as HTTP 429 with body
                 # text "You exceeded your current quota". Halt rather than
                 # burning retries on a dead account.
-                _maybe_raise_credit_exhausted("OpenAI", err)
+                _maybe_raise_credit_exhausted(self.provider_name, err)
                 # Transient by definition — back off and retry instead of
                 # failing the whole cell. OpenAI's body usually carries a
                 # tight hint like ``"Please try again in 94ms"``; honor it
@@ -561,21 +622,28 @@ class OpenAIAgentClient:
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
                     raise RuntimeError(
-                        f"OpenAI rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
+                        f"{self.provider_name} rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
                     ) from err
                 time.sleep(_rate_limit_sleep_seconds(err, backoff))
                 backoff *= 2
             except PermissionDeniedError as err:
-                raise RuntimeError(f"OpenAI request forbidden: {err}") from err
+                raise RuntimeError(f"{self.provider_name} request forbidden: {err}") from err
             except Exception as err:
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
-                    raise RuntimeError(f"OpenAI API failed: {err}") from err
+                    raise RuntimeError(f"{self.provider_name} API failed: {err}") from err
                 time.sleep(backoff)
                 backoff *= 2
         else:
-            raise RuntimeError("OpenAI invocation failed") from last_err
+            raise RuntimeError(f"{self.provider_name} invocation failed") from last_err
 
+        log_custom_llm_response(
+            logger,
+            provider=self._provider_id,
+            base_url=self._base_url,
+            requested_model=self._model,
+            response=response,
+        )
         if not hasattr(response, "choices") or not response.choices:
             raise RuntimeError(
                 f"OpenAI API returned an unexpected response: {type(response).__name__}"
@@ -825,9 +893,36 @@ def get_agent_llm() -> _AgentClientType:
             model=settings.openai_reasoning_model,
             max_tokens=OPENAI_LLM_CONFIG.max_tokens,
         )
-    elif provider in ("openrouter", "deepseek", "gemini", "nvidia", "minimax", "groq", "ollama"):
+    elif provider in (
+        "custom-openai",
+        "openrouter",
+        "deepseek",
+        "gemini",
+        "nvidia",
+        "minimax",
+        "groq",
+        "ollama",
+    ):
         # All OpenAI-compatible providers
         _agent_client = _create_openai_compat_client(settings, provider)
+    elif provider == "custom-anthropic":
+        from anthropic import Anthropic
+
+        from app.config import CUSTOM_ANTHROPIC_LLM_CONFIG
+
+        base_url = settings.custom_anthropic_base_url
+        custom_client = Anthropic(
+            api_key=settings.custom_anthropic_api_key,
+            base_url=base_url,
+            timeout=_CLIENT_TIMEOUT_SEC,
+        )
+        _agent_client = AnthropicAgentClient(
+            model=settings.custom_anthropic_reasoning_model,
+            max_tokens=CUSTOM_ANTHROPIC_LLM_CONFIG.max_tokens,
+            client=custom_client,
+            provider_name="custom-anthropic",
+            base_url=base_url,
+        )
     elif provider == "bedrock":
         from app.config import BEDROCK_LLM_CONFIG
         from app.services.llm_client import _is_anthropic_bedrock_model
@@ -869,6 +964,11 @@ def _create_openai_compat_client(settings: Any, provider: str) -> OpenAIAgentCli
     )
 
     provider_map: dict[str, tuple[str, str, str]] = {
+        "custom-openai": (
+            settings.custom_openai_base_url,
+            "CUSTOM_OPENAI_API_KEY",
+            settings.custom_openai_reasoning_model,
+        ),
         "openrouter": (
             OPENROUTER_BASE_URL,
             "OPENROUTER_API_KEY",
@@ -890,6 +990,13 @@ def _create_openai_compat_client(settings: Any, provider: str) -> OpenAIAgentCli
             api_key_default="ollama",
         )
     base_url, api_key_env, model = provider_map[provider]
+    if provider == "custom-openai":
+        return OpenAIAgentClient(
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            provider_name="custom-openai",
+        )
     return OpenAIAgentClient(model=model, base_url=base_url, api_key_env=api_key_env)
 
 

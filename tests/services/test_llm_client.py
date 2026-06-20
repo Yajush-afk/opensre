@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from anthropic import AuthenticationError, NotFoundError, PermissionDeniedError
 from anthropic import BadRequestError as AnthropicBadRequestError
@@ -1122,6 +1124,179 @@ def test_create_llm_client_openai_reasoning_sets_toolcall_fallback(monkeypatch) 
         assert client._model_fallback == "gpt-5.4-mini"
     finally:
         llm_client.reset_llm_singletons()
+
+
+@pytest.mark.parametrize(
+    ("model_type", "expected_model", "expected_fallback"),
+    [
+        ("reasoning", "gateway-reasoning", "gateway-toolcall"),
+        ("classification", "gateway-classification", "gateway-toolcall"),
+        ("toolcall", "gateway-toolcall", None),
+    ],
+)
+def test_create_llm_client_custom_openai_routes_each_model_tier(
+    monkeypatch,
+    model_type: str,
+    expected_model: str,
+    expected_fallback: str | None,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "custom-openai")
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "gateway-key")
+    monkeypatch.setenv("CUSTOM_OPENAI_BASE_URL", "http://localhost:4000/v1")
+    monkeypatch.setenv("CUSTOM_OPENAI_REASONING_MODEL", "gateway-reasoning")
+    monkeypatch.setenv("CUSTOM_OPENAI_CLASSIFICATION_MODEL", "gateway-classification")
+    monkeypatch.setenv("CUSTOM_OPENAI_TOOLCALL_MODEL", "gateway-toolcall")
+
+    client = llm_client._create_llm_client(cast(llm_client.ModelType, model_type))
+
+    assert isinstance(client, llm_client.OpenAILLMClient)
+    assert client._model == expected_model
+    assert client._model_fallback == expected_fallback
+    assert client._base_url == "http://localhost:4000/v1"
+    assert client._api_key_env == "CUSTOM_OPENAI_API_KEY"
+    assert client._provider_name == "custom-openai"
+    assert client._model_type == model_type
+
+
+def test_create_llm_client_custom_anthropic_preserves_endpoint_after_key_rotation(
+    monkeypatch,
+) -> None:
+    created: list[dict[str, object]] = []
+
+    class _CustomAnthropic:
+        def __init__(self, **kwargs: object) -> None:
+            created.append(kwargs)
+            self.messages = _FakeAnthropicMessages()
+
+    monkeypatch.setattr(llm_client, "Anthropic", _CustomAnthropic)
+    monkeypatch.setenv("LLM_PROVIDER", "custom-anthropic")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_API_KEY", "gateway-key-1")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_BASE_URL", "http://localhost:4000")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_CLASSIFICATION_MODEL", "gateway-classification")
+
+    client = llm_client._create_llm_client("classification")
+
+    assert isinstance(client, llm_client.LLMClient)
+    assert client._model == "gateway-classification"
+    assert client._api_key_env == "CUSTOM_ANTHROPIC_API_KEY"
+    assert created[-1]["api_key"] == "gateway-key-1"
+    assert created[-1]["base_url"] == "http://localhost:4000"
+
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_API_KEY", "gateway-key-2")
+    client._ensure_client()
+
+    assert created[-1]["api_key"] == "gateway-key-2"
+    assert created[-1]["base_url"] == "http://localhost:4000"
+    assert len(created) == 2
+
+
+def test_custom_anthropic_retry_stays_on_endpoint_and_logs_response_metadata(
+    monkeypatch,
+    caplog,
+) -> None:
+    attempts = 0
+    constructed_base_urls: list[str | None] = []
+
+    class _Block:
+        type = "text"
+        text = "retry-ok"
+
+    class _Response:
+        content = [_Block()]
+        model = "gateway-final-model"
+        _request_id = "req-anthropic-123"
+        usage = None
+
+    class _Messages:
+        def create(self, **_kwargs: object) -> _Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary gateway failure")
+            return _Response()
+
+    class _Anthropic:
+        def __init__(self, **kwargs: object) -> None:
+            base_url = kwargs.get("base_url")
+            assert isinstance(base_url, str | None)
+            constructed_base_urls.append(base_url)
+            self.messages = _Messages()
+
+    monkeypatch.setattr(llm_client, "Anthropic", _Anthropic)
+    monkeypatch.setattr(llm_client, "resolve_llm_api_key", lambda _env: "gateway-secret")
+    monkeypatch.setattr(llm_client.time, "sleep", lambda _seconds: None)
+    caplog.set_level("INFO", logger="app.services.llm_client")
+
+    client = llm_client.LLMClient(
+        model="gateway-requested-model",
+        base_url="http://localhost:4000",
+        api_key_env="CUSTOM_ANTHROPIC_API_KEY",
+        provider_name="custom-anthropic",
+        model_type="reasoning",
+    )
+    response = client.invoke("investigate")
+
+    assert response.content == "retry-ok"
+    assert attempts == 2
+    assert constructed_base_urls == ["http://localhost:4000"]
+    assert "attempt=2" in caplog.text
+    assert "final_model=gateway-final-model" in caplog.text
+    assert "request_id=req-anthropic-123" in caplog.text
+    assert "gateway-secret" not in caplog.text
+
+
+def test_custom_openai_model_fallback_stays_on_custom_endpoint(
+    monkeypatch,
+    caplog,
+) -> None:
+    calls: list[str] = []
+    constructed_base_urls: list[str | None] = []
+
+    class _Message:
+        content = "fallback-ok"
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+        model = "gateway-toolcall"
+        _request_id = "req-gateway-123"
+
+    class _Completions:
+        def create(self, **kwargs: object) -> _Response:
+            calls.append(str(kwargs["model"]))
+            if len(calls) == 1:
+                raise _make_fake_openai_bad_request_error("invalid model ID")
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            base_url = kwargs.get("base_url")
+            assert isinstance(base_url, str | None)
+            constructed_base_urls.append(base_url)
+            self.chat = type("_Chat", (), {"completions": _Completions()})()
+
+    monkeypatch.setattr(llm_client, "OpenAI", _OpenAI)
+    monkeypatch.setattr(llm_client, "resolve_llm_api_key", lambda _env: "gateway-secret")
+    caplog.set_level("INFO", logger="app.services.llm_client")
+
+    client = llm_client.OpenAILLMClient(
+        model="gateway-reasoning",
+        model_fallback="gateway-toolcall",
+        base_url="http://localhost:4000/v1",
+        api_key_env="CUSTOM_OPENAI_API_KEY",
+        provider_name="custom-openai",
+        model_type="reasoning",
+    )
+    response = client.invoke("investigate")
+
+    assert response.content == "fallback-ok"
+    assert calls == ["gateway-reasoning", "gateway-toolcall"]
+    assert constructed_base_urls == ["http://localhost:4000/v1"]
+    assert "request_id=req-gateway-123" in caplog.text
+    assert "final_model=gateway-toolcall" in caplog.text
+    assert "gateway-secret" not in caplog.text
 
 
 def test_create_llm_client_deepseek_reasoning_sets_toolcall_fallback(monkeypatch) -> None:

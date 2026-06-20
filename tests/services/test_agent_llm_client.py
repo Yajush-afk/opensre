@@ -756,6 +756,108 @@ def test_get_agent_llm_routes_deepseek_to_openai_compatible_client(
     assert captured["api_key_env"] == "DEEPSEEK_API_KEY"
 
 
+def test_get_agent_llm_routes_custom_openai_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import agent_llm_client as alc
+
+    captured: dict[str, object] = {}
+
+    class _FakeOpenAIAgentClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(alc, "OpenAIAgentClient", _FakeOpenAIAgentClient)
+    monkeypatch.setenv("LLM_PROVIDER", "custom-openai")
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "gateway-key")
+    monkeypatch.setenv("CUSTOM_OPENAI_BASE_URL", "http://localhost:4000/v1")
+    monkeypatch.setenv("CUSTOM_OPENAI_REASONING_MODEL", "gateway-reasoning")
+
+    alc.reset_agent_client()
+    try:
+        client = alc.get_agent_llm()
+
+        assert isinstance(client, _FakeOpenAIAgentClient)
+        assert captured["model"] == "gateway-reasoning"
+        assert captured["base_url"] == "http://localhost:4000/v1"
+        assert captured["api_key_env"] == "CUSTOM_OPENAI_API_KEY"
+        assert captured["provider_name"] == "custom-openai"
+    finally:
+        alc.reset_agent_client()
+
+
+def test_get_agent_llm_routes_custom_anthropic_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import anthropic
+
+    from app.services import agent_llm_client as alc
+
+    captured: dict[str, object] = {}
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.messages = types.SimpleNamespace(create=lambda **_: None)
+
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
+    monkeypatch.setenv("LLM_PROVIDER", "custom-anthropic")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_API_KEY", "gateway-key")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_BASE_URL", "http://localhost:4000/v1")
+    monkeypatch.setenv("CUSTOM_ANTHROPIC_REASONING_MODEL", "gateway-reasoning")
+
+    alc.reset_agent_client()
+    try:
+        client = alc.get_agent_llm()
+
+        assert isinstance(client, AnthropicAgentClient)
+        assert captured["api_key"] == "gateway-key"
+        assert captured["base_url"] == "http://localhost:4000"
+        assert client._model == "gateway-reasoning"
+        assert client._provider_id == "custom-anthropic"
+        assert client._base_url == "http://localhost:4000"
+    finally:
+        alc.reset_agent_client()
+
+
+def test_custom_openai_agent_diagnostics_include_endpoint_model_and_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "gateway-secret")
+
+    class _Message:
+        content = "done"
+        tool_calls: list[object] = []
+
+        def model_dump(self, **_: object) -> dict[str, object]:
+            return {"role": "assistant", "content": self.content}
+
+    response = types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=_Message(), finish_reason="stop")],
+        model="gateway-final-model",
+        _request_id="req-agent-123",
+    )
+    client = OpenAIAgentClient(
+        model="gateway-requested-model",
+        base_url="http://localhost:4000/v1",
+        api_key_env="CUSTOM_OPENAI_API_KEY",
+        provider_name="custom-openai",
+    )
+    client._client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **_: response))
+    )
+    caplog.set_level("INFO", logger="app.services.agent_llm_client")
+
+    result = client.invoke(messages=[{"role": "user", "content": "investigate"}])
+
+    assert result.content == "done"
+    assert "endpoint=http://localhost:4000/v1" in caplog.text
+    assert "final_model=gateway-final-model" in caplog.text
+    assert "request_id=req-agent-123" in caplog.text
+    assert "gateway-secret" not in caplog.text
+
+
 @pytest.mark.parametrize(
     "provider",
     [

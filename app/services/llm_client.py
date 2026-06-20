@@ -39,6 +39,8 @@ from pydantic import BaseModel, ValidationError
 
 from app.config import (
     ANTHROPIC_LLM_CONFIG,
+    CUSTOM_ANTHROPIC_LLM_CONFIG,
+    CUSTOM_OPENAI_LLM_CONFIG,
     DEEPSEEK_BASE_URL,
     GEMINI_BASE_URL,
     GROQ_BASE_URL,
@@ -50,10 +52,18 @@ from app.config import (
     resolve_llm_settings,
 )
 from app.llm_credentials import resolve_llm_api_key
+from app.llm_endpoint import (
+    LLMAPISurface,
+    log_custom_llm_request,
+    log_custom_llm_response,
+    safe_llm_endpoint_label,
+)
 from app.llm_reasoning_effort import get_active_reasoning_effort
 from app.types.root_cause_categories import VALID_ROOT_CAUSE_CATEGORIES
 
 logger = logging.getLogger(__name__)
+
+ModelType = Literal["reasoning", "classification", "toolcall"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Types
@@ -158,11 +168,23 @@ class LLMResponse:
 
 class LLMClient:
     def __init__(
-        self, *, model: str, max_tokens: int = 1024, temperature: float | None = None
+        self,
+        *,
+        model: str,
+        max_tokens: int = 1024,
+        temperature: float | None = None,
+        base_url: str | None = None,
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        provider_name: str = "anthropic",
+        model_type: ModelType | None = None,
     ) -> None:
-        api_key = resolve_llm_api_key("ANTHROPIC_API_KEY")
+        api_key = resolve_llm_api_key(api_key_env)
         self._api_key = api_key
-        self._client = Anthropic(api_key=api_key, timeout=_CLIENT_TIMEOUT_SEC)
+        self._base_url = base_url
+        self._api_key_env = api_key_env
+        self._provider_name = provider_name
+        self._model_type = model_type
+        self._client = self._build_client(api_key)
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -178,15 +200,24 @@ class LLMClient:
         self._bound_tools = [dict(item) for item in tools]
         return self
 
+    def _build_client(self, api_key: str) -> Anthropic:
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": _CLIENT_TIMEOUT_SEC,
+        }
+        if self._base_url is not None:
+            kwargs["base_url"] = self._base_url
+        return Anthropic(**kwargs)
+
     def _ensure_client(self) -> None:
-        api_key = resolve_llm_api_key("ANTHROPIC_API_KEY")
+        api_key = resolve_llm_api_key(self._api_key_env)
         if not api_key:
             raise RuntimeError(
-                "Missing ANTHROPIC_API_KEY. Set it in your environment, .env, or secure local keychain before running LLM steps."
+                f"Missing {self._api_key_env}. Set it in your environment, .env, or secure local keychain before running LLM steps."
             )
         if api_key != self._api_key:
             self._api_key = api_key
-            self._client = Anthropic(api_key=api_key, timeout=_CLIENT_TIMEOUT_SEC)
+            self._client = self._build_client(api_key)
 
     def _build_request_kwargs(self, prompt_or_messages: Any) -> dict[str, Any]:
         """Refresh credentials, normalize messages, apply guardrails, and build API kwargs.
@@ -228,16 +259,25 @@ class LLMClient:
         max_attempts = _RETRY_MAX_ATTEMPTS
         last_err: Exception | None = None
         for attempt in range(max_attempts):
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_name,
+                api_surface=LLMAPISurface.ANTHROPIC_MESSAGES,
+                base_url=self._base_url,
+                tier=self._model_type or "unknown",
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 response = self._client.messages.create(**kwargs)
                 break
             except AuthenticationError as err:
                 raise RuntimeError(
-                    "Anthropic authentication failed. Check ANTHROPIC_API_KEY in your environment or .env."
+                    f"{self._provider_name} authentication failed. Check {self._api_key_env} in your environment, .env, or secure local keychain."
                 ) from err
             except NotFoundError as err:
                 raise RuntimeError(
-                    f"Anthropic model '{self._model}' was not found. "
+                    f"{self._provider_name} model '{self._model}' was not found. "
                     "Check your configured model name and try again."
                 ) from err
             except AnthropicBadRequestError as err:
@@ -252,6 +292,14 @@ class LLMClient:
                 backoff_seconds *= 2
         else:
             raise RuntimeError("LLM invocation failed without a concrete error") from last_err
+
+        log_custom_llm_response(
+            logger,
+            provider=self._provider_name,
+            base_url=self._base_url,
+            requested_model=self._model,
+            response=response,
+        )
 
         if self._bound_tools:
             tool_calls: list[dict[str, Any]] = []
@@ -299,6 +347,15 @@ class LLMClient:
         max_attempts = _RETRY_MAX_ATTEMPTS
         for attempt in range(max_attempts):
             emitted = False
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_name,
+                api_surface=LLMAPISurface.ANTHROPIC_MESSAGES,
+                base_url=self._base_url,
+                tier=self._model_type or "unknown",
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 with self._client.messages.stream(**kwargs) as stream:
                     for text in stream.text_stream:
@@ -307,11 +364,11 @@ class LLMClient:
                 return
             except AuthenticationError as err:
                 raise RuntimeError(
-                    "Anthropic authentication failed. Check ANTHROPIC_API_KEY in your environment or .env."
+                    f"{self._provider_name} authentication failed. Check {self._api_key_env} in your environment, .env, or secure local keychain."
                 ) from err
             except NotFoundError as err:
                 raise RuntimeError(
-                    f"Anthropic model '{self._model}' was not found. "
+                    f"{self._provider_name} model '{self._model}' was not found. "
                     "Check your configured model name and try again."
                 ) from err
             except AnthropicBadRequestError as err:
@@ -767,6 +824,8 @@ class OpenAILLMClient:
         api_key_env: str = "OPENAI_API_KEY",
         api_key_default: str = "",
         default_headers: dict[str, str] | None = None,
+        provider_name: str | None = None,
+        model_type: ModelType | None = None,
     ) -> None:
         api_key = resolve_llm_api_key(api_key_env) or api_key_default
         self._api_key = api_key
@@ -775,6 +834,8 @@ class OpenAILLMClient:
         self._api_key_env = api_key_env
         self._default_headers = default_headers
         self._provider_label = api_key_env.removesuffix("_API_KEY").replace("_", " ").title()
+        self._provider_name = provider_name or api_key_env.removesuffix("_API_KEY").lower()
+        self._model_type = model_type
         self._client: OpenAI | None = None
         self._model = model
         fallback = (model_fallback or "").strip()
@@ -791,10 +852,15 @@ class OpenAILLMClient:
         previous = self._model
         self._model = fallback
         logger.warning(
-            "%s model '%s' unavailable; falling back to toolcall model '%s'.",
+            "%s model '%s' unavailable; falling back to toolcall model '%s'%s.",
             self._provider_label,
             previous,
             fallback,
+            (
+                f" at {safe_llm_endpoint_label(self._base_url)}"
+                if self._provider_name.startswith("custom-") and self._base_url
+                else ""
+            ),
         )
         return True
 
@@ -877,6 +943,15 @@ class OpenAILLMClient:
         max_attempts = _RETRY_MAX_ATTEMPTS
         last_err: Exception | None = None
         for attempt in range(max_attempts):
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_name,
+                api_surface=LLMAPISurface.OPENAI_CHAT_COMPLETIONS,
+                base_url=self._base_url,
+                tier=self._model_type or "unknown",
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 response = client.chat.completions.create(**kwargs)
                 break
@@ -950,6 +1025,13 @@ class OpenAILLMClient:
 
         if not response.choices:
             raise RuntimeError("OpenAI API returned an empty choices list")
+        log_custom_llm_response(
+            logger,
+            provider=self._provider_name,
+            base_url=self._base_url,
+            requested_model=self._model,
+            response=response,
+        )
         message = response.choices[0].message
         if self._bound_tools:
             tool_calls_raw = getattr(message, "tool_calls", None) or []
@@ -998,6 +1080,15 @@ class OpenAILLMClient:
         max_attempts = _RETRY_MAX_ATTEMPTS
         for attempt in range(max_attempts):
             emitted = False
+            log_custom_llm_request(
+                logger,
+                provider=self._provider_name,
+                api_surface=LLMAPISurface.OPENAI_CHAT_COMPLETIONS,
+                base_url=self._base_url,
+                tier=self._model_type or "unknown",
+                model=self._model,
+                attempt=attempt + 1,
+            )
             try:
                 for chunk in client.chat.completions.create(stream=True, **kwargs):
                     if not chunk.choices:
@@ -1245,10 +1336,6 @@ def _get_cli_provider_registration(provider: str) -> CLIProviderRegistration | N
     return get_cli_provider_registration(provider)
 
 
-# Three-tier model selection: highest-cost reasoning > mid-tier classification > cheapest toolcall.
-ModelType = Literal["reasoning", "classification", "toolcall"]
-
-
 def _select_model(settings: Any, provider_prefix: str, model_type: ModelType) -> str:
     """Look up the per-provider model field for the requested tier.
 
@@ -1284,6 +1371,25 @@ def _create_llm_client(model_type: ModelType) -> _LLMClientType:
             model=_select_model(settings, "openai", model_type),
             model_fallback=_fallback_model("openai"),
             max_tokens=config.max_tokens,
+        )
+    elif provider == "custom-openai":
+        return OpenAILLMClient(
+            model=_select_model(settings, "custom_openai", model_type),
+            model_fallback=_fallback_model("custom_openai"),
+            max_tokens=CUSTOM_OPENAI_LLM_CONFIG.max_tokens,
+            base_url=settings.custom_openai_base_url,
+            api_key_env="CUSTOM_OPENAI_API_KEY",
+            provider_name="custom-openai",
+            model_type=model_type,
+        )
+    elif provider == "custom-anthropic":
+        return LLMClient(
+            model=_select_model(settings, "custom_anthropic", model_type),
+            max_tokens=CUSTOM_ANTHROPIC_LLM_CONFIG.max_tokens,
+            base_url=settings.custom_anthropic_base_url,
+            api_key_env="CUSTOM_ANTHROPIC_API_KEY",
+            provider_name="custom-anthropic",
+            model_type=model_type,
         )
     elif provider == "openrouter":
         from app.config import OPENROUTER_LLM_CONFIG

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -119,3 +120,50 @@ def safe_llm_endpoint_label(base_url: str) -> str:
     rendered_host = f"[{hostname}]" if ":" in hostname else hostname
     netloc = f"{rendered_host}:{port}" if port is not None else rendered_host
     return urlunsplit((parts.scheme.lower(), netloc, parts.path.rstrip("/"), "", ""))
+
+
+def log_custom_llm_request(
+    log: logging.Logger,
+    *,
+    provider: str,
+    api_surface: LLMAPISurface,
+    base_url: str | None,
+    tier: str,
+    model: str,
+    attempt: int,
+) -> None:
+    """Log safe request-routing metadata for custom providers."""
+    if not provider.startswith("custom-") or base_url is None:
+        return
+    log.info(
+        "LLM request provider=%s api_surface=%s endpoint=%s tier=%s model=%s attempt=%d",
+        provider,
+        api_surface,
+        safe_llm_endpoint_label(base_url),
+        tier,
+        model,
+        attempt,
+    )
+
+
+def log_custom_llm_response(
+    log: logging.Logger,
+    *,
+    provider: str,
+    base_url: str | None,
+    requested_model: str,
+    response: object,
+) -> None:
+    """Log safe response-routing metadata exposed by provider SDKs."""
+    if not provider.startswith("custom-") or base_url is None:
+        return
+    log.info(
+        "LLM response provider=%s endpoint=%s requested_model=%s final_model=%s request_id=%s",
+        provider,
+        safe_llm_endpoint_label(base_url),
+        requested_model,
+        getattr(response, "model", None) or "unknown",
+        getattr(response, "_request_id", None)
+        or getattr(response, "request_id", None)
+        or "unknown",
+    )
