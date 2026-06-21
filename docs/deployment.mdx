@@ -16,7 +16,7 @@ Railway, EC2, ECS, Vercel, or another ASGI-capable host.
 
 <Step title="Configure your model provider">
     Add `LLM_PROVIDER` as an environment variable (for example `anthropic`,
-    `openai`, `openrouter`, or `gemini`).
+    `openai`, `custom-openai`, `custom-anthropic`, `openrouter`, or `gemini`).
 </Step>
 
   <Step title="Add the matching provider API key">
@@ -24,6 +24,8 @@ Railway, EC2, ECS, Vercel, or another ASGI-capable host.
 
     - `ANTHROPIC_API_KEY` for `LLM_PROVIDER=anthropic`
     - `OPENAI_API_KEY` for `LLM_PROVIDER=openai`
+    - `CUSTOM_OPENAI_API_KEY` and `CUSTOM_OPENAI_BASE_URL` for `LLM_PROVIDER=custom-openai`
+    - `CUSTOM_ANTHROPIC_API_KEY` and `CUSTOM_ANTHROPIC_BASE_URL` for `LLM_PROVIDER=custom-anthropic`
     - `OPENROUTER_API_KEY` for `LLM_PROVIDER=openrouter`
     - `DEEPSEEK_API_KEY` for `LLM_PROVIDER=deepseek`
     - `GEMINI_API_KEY` for `LLM_PROVIDER=gemini`
@@ -43,6 +45,36 @@ ANTHROPIC_API_KEY=...
 ```
 
 The complete list of provider keys and optional model overrides is documented in `.env.example`.
+
+## Custom gateway deployment
+
+Use a custom provider when OpenSRE must send model traffic through LiteLLM, vLLM, LocalAI, or an internal gateway.
+
+OpenAI-compatible example:
+
+```bash
+LLM_PROVIDER=custom-openai
+CUSTOM_OPENAI_BASE_URL=https://llm-gateway.example.com/v1
+CUSTOM_OPENAI_API_KEY=...
+CUSTOM_OPENAI_MODEL=production-rca
+```
+
+Anthropic-compatible example:
+
+```bash
+LLM_PROVIDER=custom-anthropic
+CUSTOM_ANTHROPIC_BASE_URL=https://llm-gateway.example.com
+CUSTOM_ANTHROPIC_API_KEY=...
+CUSTOM_ANTHROPIC_MODEL=production-rca
+```
+
+The OpenAI-compatible URL is the API root and commonly includes `/v1`. The Anthropic-compatible URL is the gateway root before `/v1/messages`; omit a terminal `/v1`.
+
+When OpenSRE and the gateway run in separate containers or services, use the gateway's internal service hostname instead of `localhost`. Inside a container, `localhost` refers to that container itself.
+
+Store gateway keys in your hosting provider's secret manager. Use HTTPS for traffic crossing an untrusted network; HTTP remains supported for local and trusted internal gateways. Custom-provider failures are reported directly and never fall back to public OpenAI or Anthropic endpoints.
+
+Task-specific model variables override the shared `CUSTOM_OPENAI_MODEL` or `CUSTOM_ANTHROPIC_MODEL`. If no custom model is configured, OpenSRE uses the corresponding OpenAI or Anthropic family default. Model discovery through `/models` is optional and is not required by OpenSRE.
 
 ## Railway deployment
 

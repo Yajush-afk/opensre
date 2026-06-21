@@ -9,7 +9,7 @@ All configuration options for OpenSRE can be set via environment variables. This
 
 | Variable | Default | Description | Module |
 |----------|---------|-------------|--------|
-| `LLM_PROVIDER` | `anthropic` | Primary LLM provider (`anthropic`, `openai`, `openrouter`, `deepseek`, `gemini`, `nvidia`, `minimax`, `groq`, `bedrock`, `ollama`, `codex`, `claude-code`, `cursor`, `gemini-cli`, `antigravity-cli`, `opencode`, `kimi`, `copilot`) | `config` |
+| `LLM_PROVIDER` | `anthropic` | Primary LLM provider (`anthropic`, `openai`, `custom-openai`, `custom-anthropic`, `openrouter`, `deepseek`, `gemini`, `nvidia`, `minimax`, `groq`, `bedrock`, `ollama`, `codex`, `claude-code`, `cursor`, `gemini-cli`, `antigravity-cli`, `opencode`, `kimi`, `copilot`) | `config` |
 | `LLM_MAX_TOKENS` | `4096` | Maximum tokens for LLM responses | `config` |
 
 ### Anthropic
@@ -17,6 +17,7 @@ All configuration options for OpenSRE can be set via environment variables. This
 |----------|---------|-------------|--------|
 | `ANTHROPIC_API_KEY` | | API key for Anthropic | `llm_credentials` |
 | `ANTHROPIC_REASONING_MODEL` | | Model for reasoning tasks | `config` |
+| `ANTHROPIC_CLASSIFICATION_MODEL` | | Model for classification tasks | `config` |
 | `ANTHROPIC_TOOLCALL_MODEL` | | Model for tool calling | `config` |
 
 ### OpenAI
@@ -24,7 +25,62 @@ All configuration options for OpenSRE can be set via environment variables. This
 |----------|---------|-------------|--------|
 | `OPENAI_API_KEY` | | API key for OpenAI | `llm_credentials` |
 | `OPENAI_REASONING_MODEL` | | Model for reasoning tasks | `config` |
+| `OPENAI_CLASSIFICATION_MODEL` | | Model for classification tasks | `config` |
 | `OPENAI_TOOLCALL_MODEL` | | Model for tool calling | `config` |
+
+### Custom OpenAI-compatible gateway
+
+Use `custom-openai` with gateways that expose the OpenAI Chat Completions API, including LiteLLM, vLLM, LocalAI, and internal model gateways.
+
+| Variable | Default | Description | Module |
+|----------|---------|-------------|--------|
+| `CUSTOM_OPENAI_BASE_URL` | | Required API root; include `/v1` when required by the gateway | `config` |
+| `CUSTOM_OPENAI_API_KEY` | | Required gateway API key | `llm_credentials` |
+| `CUSTOM_OPENAI_MODEL` | | Optional shared model for all task tiers | `config` |
+| `CUSTOM_OPENAI_REASONING_MODEL` | OpenAI reasoning default | Override model for reasoning tasks | `config` |
+| `CUSTOM_OPENAI_CLASSIFICATION_MODEL` | OpenAI classification default | Override model for classification tasks | `config` |
+| `CUSTOM_OPENAI_TOOLCALL_MODEL` | OpenAI tool-call default | Override model for tool calling | `config` |
+
+```bash
+LLM_PROVIDER=custom-openai
+CUSTOM_OPENAI_BASE_URL=http://localhost:4000/v1
+CUSTOM_OPENAI_API_KEY=your-gateway-key
+CUSTOM_OPENAI_MODEL=your-model-alias
+```
+
+The OpenAI client appends `/chat/completions` to the configured API root. Supply the complete root expected by your gateway: for example, `http://localhost:4000/v1` produces requests to `http://localhost:4000/v1/chat/completions`.
+
+### Custom Anthropic-compatible gateway
+
+Use `custom-anthropic` with gateways that expose the Anthropic Messages API.
+
+| Variable | Default | Description | Module |
+|----------|---------|-------------|--------|
+| `CUSTOM_ANTHROPIC_BASE_URL` | | Required gateway root before `/v1/messages` | `config` |
+| `CUSTOM_ANTHROPIC_API_KEY` | | Required gateway API key | `llm_credentials` |
+| `CUSTOM_ANTHROPIC_MODEL` | | Optional shared model for all task tiers | `config` |
+| `CUSTOM_ANTHROPIC_REASONING_MODEL` | Anthropic reasoning default | Override model for reasoning tasks | `config` |
+| `CUSTOM_ANTHROPIC_CLASSIFICATION_MODEL` | Anthropic classification default | Override model for classification tasks | `config` |
+| `CUSTOM_ANTHROPIC_TOOLCALL_MODEL` | Anthropic tool-call default | Override model for tool calling | `config` |
+
+```bash
+LLM_PROVIDER=custom-anthropic
+CUSTOM_ANTHROPIC_BASE_URL=http://localhost:4000
+CUSTOM_ANTHROPIC_API_KEY=your-gateway-key
+CUSTOM_ANTHROPIC_MODEL=your-model-alias
+```
+
+The Anthropic client appends `/v1/messages`. Configure the gateway root without a trailing `/v1`; OpenSRE removes one accidental terminal `/v1` to prevent `/v1/v1/messages`.
+
+For both custom providers, model selection follows this order:
+
+1. The task-specific reasoning, classification, or tool-call variable
+2. The shared `CUSTOM_OPENAI_MODEL` or `CUSTOM_ANTHROPIC_MODEL`
+3. The corresponding built-in OpenAI or Anthropic family default
+
+The base URL and API key are required. OpenSRE does not require or query `/models`, because gateways may accept model aliases that are not returned by discovery. If custom-provider configuration or requests fail, OpenSRE reports the failure and does not send the request to a public OpenAI or Anthropic endpoint.
+
+API keys are resolved from the environment first and then the local OS keyring. Keep keys in your deployment secret manager or keyring, and never commit them to `.env`.
 
 ### OpenRouter
 | Variable | Default | Description | Module |
