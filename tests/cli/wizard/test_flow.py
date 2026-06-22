@@ -4,6 +4,8 @@ import json
 import os
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.cli.wizard import flow
 from app.cli.wizard import store as wizard_store
 from app.cli.wizard.env_sync import sync_provider_env
@@ -873,6 +875,99 @@ def test_run_wizard_persists_matching_local_config_and_env(monkeypatch, tmp_path
     assert "LLM_PROVIDER=openai\n" in env_values
     assert "OPENAI_API_KEY=" not in env_values
     assert saved_llm_keys == [("OPENAI_API_KEY", "openai-secret")]
+
+
+@pytest.mark.parametrize(
+    (
+        "provider_value",
+        "selected_model",
+        "entered_base_url",
+        "expected_base_url",
+        "api_key_env",
+        "model_env",
+    ),
+    [
+        (
+            "custom-openai",
+            "gpt-5.4-mini",
+            "http://localhost:4000/v1/",
+            "http://localhost:4000/v1",
+            "CUSTOM_OPENAI_API_KEY",
+            "CUSTOM_OPENAI_REASONING_MODEL",
+        ),
+        (
+            "custom-anthropic",
+            "claude-opus-4-7",
+            "https://gateway.example.com/v1",
+            "https://gateway.example.com",
+            "CUSTOM_ANTHROPIC_API_KEY",
+            "CUSTOM_ANTHROPIC_REASONING_MODEL",
+        ),
+    ],
+)
+def test_run_wizard_persists_custom_gateway_configuration(
+    monkeypatch,
+    tmp_path,
+    provider_value: str,
+    selected_model: str,
+    entered_base_url: str,
+    expected_base_url: str,
+    api_key_env: str,
+    model_env: str,
+) -> None:
+    select_responses = iter(["quickstart", provider_value, selected_model, "skip"])
+    saved_llm_keys: list[tuple[str, str]] = []
+
+    def _mock_select(*_args, **_kwargs):
+        prompt = MagicMock()
+        prompt.ask.return_value = next(select_responses)
+        return prompt
+
+    def _mock_text(*_args, **_kwargs):
+        prompt = MagicMock()
+        prompt.ask.return_value = entered_base_url
+        return prompt
+
+    def _mock_password(*_args, **_kwargs):
+        prompt = MagicMock()
+        prompt.ask.return_value = "gateway-secret"
+        return prompt
+
+    store_path = tmp_path / "opensre.json"
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(flow, "select_prompt", _mock_select)
+    monkeypatch.setattr(flow.questionary, "text", _mock_text)
+    monkeypatch.setattr(flow.questionary, "password", _mock_password)
+    monkeypatch.setattr(flow, "get_store_path", lambda: store_path)
+    monkeypatch.setattr(flow, "probe_local_target", lambda _path: ProbeResult("local", True, "ok"))
+    monkeypatch.setattr(
+        flow,
+        "save_local_config",
+        lambda **kwargs: wizard_store.save_local_config(path=store_path, **kwargs),
+    )
+    monkeypatch.setattr(
+        flow,
+        "sync_provider_env",
+        lambda **kwargs: sync_provider_env(env_path=env_path, **kwargs),
+    )
+    monkeypatch.setattr(
+        flow,
+        "save_llm_api_key",
+        lambda env_var, value: saved_llm_keys.append((env_var, value)),
+    )
+
+    assert flow.run_wizard() == 0
+
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    env_values = env_path.read_text(encoding="utf-8")
+    assert payload["targets"]["local"]["provider"] == provider_value
+    assert payload["targets"]["local"]["api_key_env"] == api_key_env
+    assert payload["targets"]["local"]["model_env"] == model_env
+    assert f"LLM_PROVIDER={provider_value}\n" in env_values
+    assert f"{model_env}={selected_model}\n" in env_values
+    assert f"BASE_URL={expected_base_url}\n" in env_values
+    assert f"{api_key_env}=" not in env_values
+    assert saved_llm_keys == [(api_key_env, "gateway-secret")]
 
 
 def test_run_wizard_codex_skips_api_key_and_runs_cli_onboarding(monkeypatch, tmp_path) -> None:

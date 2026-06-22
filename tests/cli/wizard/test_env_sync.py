@@ -101,6 +101,70 @@ def test_sync_provider_env_updates_provider_specific_keys(tmp_path, monkeypatch)
     assert "OPENAI_MODEL=gpt-5-mini\n" in content
 
 
+@pytest.mark.parametrize(
+    ("provider_value", "base_url", "base_url_env", "model_env", "shared_model_env"),
+    [
+        (
+            "custom-openai",
+            "http://localhost:4000/v1",
+            "CUSTOM_OPENAI_BASE_URL",
+            "CUSTOM_OPENAI_REASONING_MODEL",
+            "CUSTOM_OPENAI_MODEL",
+        ),
+        (
+            "custom-anthropic",
+            "https://gateway.example.com",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+            "CUSTOM_ANTHROPIC_REASONING_MODEL",
+            "CUSTOM_ANTHROPIC_MODEL",
+        ),
+    ],
+)
+def test_sync_provider_env_writes_custom_gateway_settings(
+    tmp_path,
+    provider_value: str,
+    base_url: str,
+    base_url_env: str,
+    model_env: str,
+    shared_model_env: str,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "LLM_PROVIDER=openai\n"
+        "CUSTOM_OPENAI_BASE_URL=https://stale-openai.example.com/v1\n"
+        "CUSTOM_ANTHROPIC_BASE_URL=https://stale-anthropic.example.com\n",
+        encoding="utf-8",
+    )
+
+    sync_provider_env(
+        provider=PROVIDER_BY_VALUE[provider_value],
+        model="gateway-model",
+        base_url=base_url,
+        env_path=env_path,
+    )
+
+    content = env_path.read_text(encoding="utf-8")
+    assert f"LLM_PROVIDER={provider_value}\n" in content
+    assert f"{base_url_env}={base_url}\n" in content
+    assert f"{model_env}=gateway-model\n" in content
+    assert f"{shared_model_env}=gateway-model\n" in content
+    stale_base_url_env = (
+        "CUSTOM_ANTHROPIC_BASE_URL"
+        if provider_value == "custom-openai"
+        else "CUSTOM_OPENAI_BASE_URL"
+    )
+    assert f"{stale_base_url_env}=" not in content
+
+
+def test_sync_provider_env_requires_custom_gateway_base_url(tmp_path) -> None:
+    with pytest.raises(ValueError, match="CUSTOM_OPENAI_BASE_URL is required"):
+        sync_provider_env(
+            provider=PROVIDER_BY_VALUE["custom-openai"],
+            model="gateway-model",
+            env_path=tmp_path / ".env",
+        )
+
+
 def test_sync_provider_env_appends_to_file_without_final_newline(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_REASONING_MODEL", raising=False)

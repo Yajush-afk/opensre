@@ -40,6 +40,10 @@ from app.llm_credentials import (
     has_llm_api_key,
     save_llm_api_key,
 )
+from app.llm_endpoint import (
+    get_custom_llm_provider_spec,
+    normalize_custom_llm_base_url,
+)
 from app.version import get_version
 
 _console = Console(
@@ -457,6 +461,23 @@ def _prompt_value(
         if allow_empty:
             return ""
         _console.print(f"[{ERROR}]  {GLYPH_ERROR}  Required.[/]")
+
+
+def _prompt_custom_llm_base_url(provider: ProviderOption, *, default: str = "") -> str:
+    """Prompt until a valid API root is supplied for a custom gateway."""
+    spec = get_custom_llm_provider_spec(provider.value)
+    if spec is None:
+        return ""
+
+    while True:
+        raw_base_url = _prompt_value(
+            f"{provider.label} base URL ({spec.base_url_env})",
+            default=default,
+        )
+        try:
+            return normalize_custom_llm_base_url(raw_base_url, spec.api_surface)
+        except ValueError as exc:
+            _console.print(f"[{ERROR}]  {GLYPH_ERROR}  {exc}[/]")
 
 
 def _persist_llm_api_key(env_var: str, value: str) -> bool:
@@ -2302,6 +2323,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
     force_repick = False
     provider: ProviderOption
     model: str
+    base_url = ""
     while True:
         _step_header(2, WIZARD_TOTAL_STEPS, "LLM Provider")
         saved_provider = (
@@ -2333,6 +2355,17 @@ def run_wizard(_argv: list[str] | None = None) -> int:
                 )
             ]
             model = provider.default_model
+            custom_spec = get_custom_llm_provider_spec(provider.value)
+            if custom_spec:
+                _step("Gateway endpoint")
+                try:
+                    base_url = _prompt_custom_llm_base_url(
+                        provider,
+                        default=os.getenv(custom_spec.base_url_env, ""),
+                    )
+                except KeyboardInterrupt:
+                    _console.print(f"\n[{WARNING}]Setup cancelled.[/]")
+                    return 1
             if provider.credential_kind not in ("cli", "none"):
                 _step(provider.credential_label.title())
                 try:
@@ -2350,6 +2383,16 @@ def run_wizard(_argv: list[str] | None = None) -> int:
             assert saved_provider is not None
             provider = saved_provider
             model = saved_model_value or provider.default_model
+            custom_spec = get_custom_llm_provider_spec(provider.value)
+            if custom_spec:
+                base_url = os.getenv(custom_spec.base_url_env, "").strip()
+                if not base_url:
+                    _step("Gateway endpoint")
+                    try:
+                        base_url = _prompt_custom_llm_base_url(provider)
+                    except KeyboardInterrupt:
+                        _console.print(f"\n[{WARNING}]Setup cancelled.[/]")
+                        return 1
             if provider.credential_kind not in ("cli", "none"):
                 has_api_key = bool(defaults["has_api_key"])
                 legacy_api_key = str(defaults["legacy_api_key"] or "").strip()
@@ -2400,7 +2443,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
         model_env=provider.model_env,
         probes=probes,
     )
-    env_path = sync_provider_env(provider=provider, model=model)
+    env_path = sync_provider_env(provider=provider, model=model, base_url=base_url or None)
 
     _step_header(3, WIZARD_TOTAL_STEPS, "Integrations")
     try:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.cli.wizard.config import PROJECT_ENV_PATH, ProviderOption
 from app.llm_credentials import delete_llm_api_key, has_llm_api_key, save_llm_api_key
+from app.llm_endpoint import get_custom_llm_provider_spec
 
 _ENV_ASSIGNMENT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 _NON_SECRET_ENV_KEYS: frozenset[str] = frozenset({"DISCORD_PUBLIC_KEY"})
@@ -163,7 +164,7 @@ def _classification_model_env(p: ProviderOption) -> str | None:
 
 
 def _provider_specific_keys(p: ProviderOption) -> set[str]:
-    """Return all env keys owned by a provider (api key + model keys)."""
+    """Return all env keys owned by a provider (endpoint, API key, and models)."""
     keys: set[str] = {p.model_env}
     if p.api_key_env:
         keys.add(p.api_key_env)
@@ -174,6 +175,9 @@ def _provider_specific_keys(p: ProviderOption) -> set[str]:
     classification_env = _classification_model_env(p)
     if classification_env:
         keys.add(classification_env)
+    custom_spec = get_custom_llm_provider_spec(p.value)
+    if custom_spec:
+        keys.add(custom_spec.base_url_env)
     return keys
 
 
@@ -211,6 +215,7 @@ def sync_provider_env(
     provider: ProviderOption,
     model: str,
     toolcall_model: str | None = None,
+    base_url: str | None = None,
     env_path: Path | None = None,
 ) -> Path:
     """Write non-secret provider settings into the project .env.
@@ -245,6 +250,9 @@ def sync_provider_env(
     classification_env = _classification_model_env(provider)
     if classification_env:
         active_non_secret.add(classification_env)
+    custom_spec = get_custom_llm_provider_spec(provider.value)
+    if custom_spec:
+        active_non_secret.add(custom_spec.base_url_env)
     keys_to_remove -= active_non_secret
 
     prior_provider = _llm_provider_value_from_lines(existing)
@@ -263,6 +271,11 @@ def sync_provider_env(
         values[provider.legacy_model_env] = model
     if toolcall_model and provider.toolcall_model_env:
         values[provider.toolcall_model_env] = toolcall_model
+    if custom_spec:
+        normalized_base_url = (base_url or "").strip()
+        if not normalized_base_url:
+            raise ValueError(f"{custom_spec.base_url_env} is required for {provider.value}.")
+        values[custom_spec.base_url_env] = normalized_base_url
 
     for key, value in values.items():
         lines = _set_env_value(lines, key, value)
