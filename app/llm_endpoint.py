@@ -98,7 +98,7 @@ def normalize_custom_llm_base_url(value: object, api_surface: LLMAPISurface) -> 
     else:
         if lowered_path.endswith("/messages"):
             raise ValueError(
-                "Custom Anthropic base URL must be an API root, not a complete operatWhat ion URL."
+                "Custom Anthropic base URL must be an API root, not a complete operation URL."
             )
         if lowered_path.endswith("/v1"):
             path = path[:-3].rstrip("/")
